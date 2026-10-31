@@ -1,23 +1,56 @@
-# Pell equations — experimental C++/GMP solver
+# Pell — fast C++/GMP solver
 
-This standalone implementation solves
+A standalone solver for the **fundamental positive solution** of Pell's equation
 
-\[
-X^2-DY^2=1,\qquad D>1\text{ nonsquare},\quad X,Y>0,
-\]
+$$
+X^2-DY^2=1,\qquad D>1\text{ a nonsquare integer}.
+$$
 
-using a Pell-specialized reduced-form/continued-fraction computation, optional
-square-factor reduction, and modular lifting. It was developed from the
-`conway_full.cpp` experiments in [`octonion/puzzles`](https://github.com/octonion/puzzles/tree/master/continued).
+The algorithm is a Pell-specialized **reduction of indefinite binary quadratic forms**, implemented through a closely related continued-fraction recurrence. Its mathematical viewpoint comes from Conway's *topograph* and the classical reduction theory of Lagrange and Gauss; Will Jagy's exposition of reduced-form cycles is especially useful for connecting that viewpoint to an explicit algorithm [1–3]. The code is **not** a literal transcription of Conway's drawings or a general binary-quadratic-form solver.
 
-**Dependencies:** a C++17 compiler, GMP (`gmp` and `gmpxx`), and Python 3 for
-CLI tests. Square-factor detection uses only standard C++ arithmetic and an
-included table of primes up to 10,000; **PARI and FLINT are not dependencies**.
-The fast arithmetic path uses `unsigned __int128` and the build assumes a
-64-bit `unsigned long` (LP64). This is an experimental solver, not yet a
-published, proof-audited library.
+It derives from the author's earlier [`conway_full.cpp`](https://github.com/octonion/puzzles/blob/master/continued/conway_full.cpp), with specialized arithmetic, earlier stopping, and an optional square-factor/lifting strategy.
 
-## Build and use
+## Algorithm
+
+### Reduced forms and continued fractions
+
+For a form $(A,B,C)$ of discriminant $\Delta=B^2-4AC>0$, the right-neighbor change of variables described by Jagy [2] has the form
+
+$$
+(A,B,C)\longmapsto
+(C,\,-B+2C\delta,\,A-B\delta+C\delta^2).
+$$
+
+The associated change-of-basis matrix is sparse, so updating the accumulated transformation does not require general matrix multiplication. For Pell's equation the principal form is $X^2-DY^2$, of discriminant **$4D$** (not necessarily the fundamental discriminant of the field).
+
+The solver uses a normalized, integer-only state for the equivalent continued-fraction walk. Writing $r=\lfloor\sqrt D\rfloor$, its successive steps can be expressed as
+
+$$
+q=\left\lfloor\frac{h+r}{k}\right\rfloor,\qquad
+h'=qk-h,\qquad k'=\frac{D-(h')^2}{k},
+$$
+
+with the signed residual tracked separately. Alongside this small state, two consecutive convergent coefficients satisfy
+
+$$
+(w,v)\longmapsto(v,w+qv).
+$$
+
+The corresponding numerator is recovered from the current reduced state instead of carrying a second row of arbitrary-precision matrix entries. The solver stops at the small residuals $\pm1,\pm2,\pm4$ and applies exact norm-one finishing identities. Its fast machine-word path also uses **continued-fraction midpoint symmetry** to stop earlier when possible; see [4] for midpoint criteria and performance comparisons. These stopping rules are part of the Pell specialization, not a general algorithm for representing arbitrary integers by binary quadratic forms.
+
+### Arithmetic optimizations
+
+The reduced-form parameters use checked 64-bit arithmetic for $D<10^{15}$, with a GMP fallback for larger inputs. The growing convergents use GMP (`mpz_t`/`mpz_class`). Several sparse transformations are accumulated into a checked machine-word **block matrix** before touching the growing integers; fused GMP multiply-adds and swaps minimize allocations and copies. Integer-root and divisibility tests are exact. This is a sequential block-accumulation scheme, not generic Strassen matrix multiplication.
+
+### Optional square-factor reduction and modular lifting
+
+For $D=d s^2$, the solver can first find the fundamental unit $\varepsilon=u+v\sqrt d$, then determine the **least** $n\ge1$ such that the coefficient of $\sqrt d$ in $\varepsilon^n$ is divisible by $s$. It computes this index from prime-power congruences and their least common multiple. An exact compact solution is then $(d,s,u,v,n)$; huge coordinates need not be constructed merely to report that solution.
+
+A small, dependency-free prime table and early exact perfect-square tests detect square factors automatically for 64-bit inputs. The decomposition is complete for $D\le10^{12}$; at larger sizes detection is deliberately bounded and may return a nonmaximal $s$, but always checks $s^2\mid D$. **Full factorization is not required**: the direct solver works for nonsquarefree inputs too. PARI's `core2`/`core2partial` and FLINT's factorization routines are possible comparison implementations, not dependencies.
+
+## Build and usage
+
+Requires a C++17 compiler and GMP (`libgmp-dev` on Debian/Ubuntu); Python 3 is used by the command-line tests. The fast path assumes a 64-bit `unsigned long` (LP64) and supports GCC/Clang `unsigned __int128`.
 
 ```sh
 make
@@ -27,116 +60,33 @@ make test
 ./conway_fast 410286423278424 --no-print --expand
 ```
 
-By default, solutions with at most 1,000 decimal digits in each coordinate
-are printed. Larger solutions are summarized without decimal conversion; if
-a square-factor reduction is available, they can be represented exactly by
-a smaller unit and a lifting exponent, without constructing the large integers.
+By default, the solver prints solutions of at most **1,000 decimal digits per coordinate** and summarizes larger ones. When square-factor lifting yields a provably oversized result, auto mode and `--no-print` avoid expanding it at all. For direct solves without a compact representation, the current code still constructs the unit.
 
-| Option | Meaning |
+| Option | Effect |
 | --- | --- |
-| `--print` | Force expansion and decimal display |
-| `--no-print` | Suppress display (and avoid expansion when a compact representation exists) |
-| `--print-limit N` | Set the automatic printing cutoff in decimal digits |
-| `--expand` | Construct full coordinates, but do not force decimal display |
-| `--verify` | Expand and verify the norm equation |
-| `--direct` or `--no-discover-square-factor` | Bypass automatic square-factor discovery |
-| `--square-factor S` | Use a supplied square factor; require `S*S` to divide `D` |
-| `--discover-square-factor` | Explicitly request automatic detection (64-bit inputs only) |
-| `--repeat N` | Repeat the computation and report average microseconds per run |
+| `--print` / `--no-print` | Force or suppress coordinate display |
+| `--print-limit N` | Change the automatic digit threshold |
+| `--expand` | Construct full coordinates without necessarily printing them |
+| `--verify` | Expand and verify $X^2-DY^2=1$ |
+| `--direct` | Skip square-factor detection and lifting |
+| `--square-factor S` | Supply a checked square factor, $S^2\mid D$ |
+| `--no-discover-square-factor` | Alias for `--direct` |
+| `--discover-square-factor` | Explicitly enable bounded detection (64-bit $D$ only) |
+| `--repeat N` | Time $N$ computations and report average microseconds |
 
-Timing ends **before** summary formatting or decimal printing. The `--verify`
-norm check occurs after the timed interval. The direct path currently expands
-the fundamental unit even under `--no-print`; the compact representation is
-available when a useful square factor is extracted.
+Reported computation time **excludes** output formatting and decimal printing; `--verify` performs its norm check after the timed interval. There is no cattle-specific flag: Archimedes' cattle problem is a benchmark for the general Pell solver, not a separate operating mode.
 
-## Square-factor detection
+## Tests and status
 
-For positive input `D`, seek
+`make test` checks square-factor extraction against an independent reference for all integers from 2 through 100,000, exercises structured and larger inputs, compares direct and lifted solutions on small parameters, and tests printing/compact modes. GitHub Actions builds and tests with GCC and Clang.
 
-\[
-D=d s^2,\quad s\ge1.
-\]
+**Status:** an experimental, performance-oriented implementation. Exact norm verification establishes that an expanded pair solves the equation, but does **not by itself** prove that it is fundamental. Minimality relies on the reduced-form stopping criteria and the least-exponent modular-lifting argument; a full proof-level audit remains desirable. Benchmark results are environment-dependent and should not be interpreted as a demonstrated speed record against PARI or other libraries.
 
-The **maximal** choice of `s` makes `d` squarefree. We use a bounded,
-dependency-free detector rather than fully factoring every input:
+## References
 
-1. Visit primes from the included, compile-time table (at most 10,000),
-   extracting their entire powers. For each exponent `e`, multiply `s` by
-   `p^(e/2)` (integer quotient) and keep the odd part in the remainder.
-2. Immediately after removing a prime power, test whether the remaining
-   cofactor is a perfect square. If it is `r*r`, multiply `s` by `r` and stop.
-3. Stop at the configured prime limit, or earlier when `p*p > remainder`.
-   Finally, perform one more exact square test on the remaining cofactor.
+1. **J. H. Conway**, assisted by **F. Y. C. Fung**, *The Sensual (Quadratic) Form*, Mathematical Association of America, 1997. The topograph and its river provide a geometric interpretation of indefinite-form reduction. [Publisher](https://doi.org/10.5948/UPO9781614440253).
+2. **Will Jagy**, “[Binary quadratic forms over the rational integers and class numbers of quadratic fields](https://math.blogoverflow.com/2014/08/23/binary-quadratic-forms-over-the-rational-integers-and-class-numbers-of-quadratic-%EF%AC%81elds/),” *Stack Exchange Mathematics Blog*, August 23, 2014. Explicit reduced-form neighbor steps, cycles, and their connection with Pell equations. See also [Jagy's answer on general binary-form representation](https://math.stackexchange.com/questions/739752/how-to-solve-binary-form-ax2bxycy2-m-for-integer-and-rational-x-y), a broader problem than the one implemented here.
+3. **D. A. Buell**, *Binary Quadratic Forms: Classical Theory and Modern Computations*, Springer, 1989. Indefinite-form reduction, cycles, and automorphisms. [DOI](https://doi.org/10.1007/978-1-4612-4542-1).
+4. **K. Matthews, J. Robertson, and J. White**, “Midpoint criteria for solving Pell's equation using the nearest square continued fraction,” *Mathematics of Computation* **79** (2010), 485–499. Midpoint techniques and comparisons with regular and nearest-integer continued fractions. [DOI](https://doi.org/10.1090/S0025-5718-09-02286-8).
 
-Both square and cube root routines use floating point **only for an initial
-guess**; 128-bit integer products correct the guess and make all acceptance
-decisions exact. The detector always returns a mathematically valid identity
-`D == d*s*s`, even when `d` has not been proved squarefree.
-
-### When is the decomposition complete?
-
-Let the trial-prime ceiling be `B` (10,000 by default). For
-`D <= B^3`, the returned factor `s` is maximal: every prime up to
-`cuberoot(D)` is tested, unless the remaining cofactor is already a square.
-After those primes have been removed, a remaining nonsquare number has at most
-two prime factors, counted with multiplicity. A repeated prime would make
-that remainder a square, which the final test detects. Therefore no
-undetected squared prime factor remains.
-
-For the default bound, **every `D <= 10^12` is fully decomposed**. For larger
-64-bit `D`, square factors with large prime bases might be missed; then `d`
-can still contain a square factor. This is deliberate: expensive general
-factorization would make some easy Pell instances much slower. The direct
-Pell solver works for nonsquarefree `d` as well. If `D` does not fit in an
-unsigned 64-bit integer, the CLI automatically uses the direct GMP path
-instead of running this detector. A user-supplied square factor is checked
-for exact divisibility, but it need not be maximal.
-
-### Why the early square test matters for Archimedes
-
-For the cattle-problem Pell parameter,
-
-\[
-D=410286423278424=4729494\cdot9314^2.
-\]
-
-Removing small prime factors through 353 leaves the square `4657^2`.
-The detector can stop at that point, rather than trial-dividing through
-4,657. The compact Pell result then records the reduced parameter and the
-least required unit exponent, `2329`.
-
-### Relation to existing libraries
-
-- **PARI/GP** provides `core2` (complete squarefree decomposition) and
-  `core2partial` (bounded extraction). Useful for validation or an optional
-  backend, but not needed for this implementation.
-- **FLINT** provides fast 64-bit integer factorization via `n_factor`, among
-  other factorization routines. Full factorization is not necessarily faster
-  than our bounded detector on typical Pell parameters.
-
-The small-prime and early-square approach is chosen for low overhead, not
-because it is proven fastest for every integer. Large inputs that require
-complete squarefree decomposition may benefit from a different algorithm.
-
-## Performance and testing
-
-On the **previous experiment's local container CPU**, the isolated Archimedes
-square-factor detection took approximately 0.18 µs with the early-square
-shortcut, versus 3.08 µs for the older trial-division detector. A separate
-5000-run compact-solver benchmark measured approximately 2.21 µs per call
-versus 5.08 µs for the previous version. These measurements were **not made
-on a Ryzen 9 5950X**. They are not a controlled comparison with PARI or FLINT;
-benchmark on your target machine to establish practical performance.
-
-`make test` runs the detector against a simple independent reference for all
-integers from 2 through 100,000, structured inputs through `10^12`, and larger
-bounded cases checking the exact identity. It also compares direct and
-square-reduced Pell solutions on small inputs, and exercises the print/compact
-CLI behavior. A correct Pell norm alone does not establish *minimality*;
-minimality also depends on the reduced-form termination and modular-order
-arguments, which should be documented and audited separately before a
-production release.
-
-This standalone project contains **no cattle-specific CLI flag**. Archimedes'
-problem is a useful benchmark; its herd-count computation belongs in a
-separate example rather than the general Pell solver.
+This software is released under the MIT License.

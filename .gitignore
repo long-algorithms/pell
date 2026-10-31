@@ -1,0 +1,9 @@
+# Compiled programs and local build artifacts
+/conway_fast
+/check-square-factor
+*.o
+/build/
+
+# Python test artifacts
+__pycache__/
+*.pyc
